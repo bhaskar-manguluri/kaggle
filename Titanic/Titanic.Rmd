@@ -1,0 +1,600 @@
+---
+title: "Titanic"
+author: "bhaskar"
+output: html_document
+---
+### load libraries
+```{r  label="1"}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(boot)
+library(tree)
+library(randomForest)
+library(gbm)
+library(e1071)
+library(neuralnet)
+```
+
+### import data
+```{r label="2"}
+#setwd("./mywork/kaggle/Titanic/")
+trainData = read.csv(file = "train.csv")
+testData = read.csv(file="test.csv")
+sampleSubmission = read.csv(file="gender_submission.csv")
+```
+
+### structure of data
+**passenngerId:** passenger sequence , **Pclass:** passenger class , **Name:** name of the passenger , **Sex:** passenger's sex , **Age:** age of the passenger **SibSp:** number of travelling siblings or spouses, **Parch** number of parents or children , **Ticket** ticket number , **Fare** ticket fare, **Cabin** cabin, **Embarked** port of embarkation
+```{r label="3"}
+str(trainData)
+head(trainData)
+str(testData)
+head(testData)
+```
+## Exploring data with questions and plots ( EDA)
+Is passengerId a index? is it relavant to Survived? can we delete the column from the data set? usually in any data frame if there is no relation between index and outcome can we delete that row from the dataset?(ref)
+```{r label="4"}
+plot(trainData$PassengerId)
+str(trainData$PassengerId)
+plot(testData$PassengerId)
+```
+so using plot function on a single continous variable gives a scatterplot with index on the horizontal axis. what happens incase of discreet variable?(ref) what happens with more than one variable and different combinations?(ref)
+```{r label="5"}
+plot(trainData$Survived)
+str(trainData$Survived)
+```
+for dicrete variable also it is scatterplot of index 'vs' Survived, we can convert these kind into factors
+
+check similarities between traindata and Testdata for preprocessing steps
+```{r label="6"}
+sapply(trainData,function(x){sum(is.na(x))})
+177/891
+sapply(testData,function(x){sum(is.na(x))})
+86/418
+sapply(trainData,function(x){length(levels(as.factor(x)))})
+sapply(testData,function(x){length(levels(as.factor(x)))})
+```
+
+
+```{r label = 7}
+trainData$Survived = as.factor(trainData$Survived)
+plot(trainData$Survived)
+```
+so for a factor it plots the bar plot of Total count vs each level , what if the factor has more than two levels?(ref)
+```{r label="8"}
+plot(trainData$Pclass)
+str(trainData$Pclass)
+trainData$Pclass = as.factor(trainData$Pclass)
+testData$Pclass = as.factor((testData$Pclass))
+plot(trainData$Pclass)
+plot(testData$Pclass)
+```
+Pclass has same levels in Both train and test
+```{r label="9"}
+plot(trainData$Name)
+str(trainData$Name)
+str(testData$Name)
+```
+as name is a factor with multiple levels , we got a barplot of count vs levels,just like index Name is also a unique factor level for each row in data, do the Name variable contains any info which can be extracted?(ref)
+```{r label = "10"}
+plot(trainData$Sex)
+str(trainData$Sex)
+str(testData$Sex)
+```
+as survived variable this also have 2 factor levels hence bar plot of count vs level is the output
+```{r label = "11"}
+plot(trainData$Age)
+str(trainData$Age)
+```
+as it is a continous numerical variable it plots value vs index , as in the case of passengerId and others
+it has missingvalues
+```{r label = "12"}
+sum(is.na(trainData$Age))
+177/891
+```
+almost twenty percent of the data is missing , what i want to see is , if the number missing data in the age is random or is there any specific range where all the missing data lie ? 
+```{r label = "13"}
+points(is.na(trainData$Age),col = "blue")
+```
+missing points , might be all through the data, but can we confirm that such is the case from the above plot?(ref)
+how to plot the missing data to see if missing is uniform or some other pattern?(15)
+```{r label = "14"}
+plot(is.na(trainData$Age))
+x = rep("yes",300)
+x1 = rep("no",100)
+x2 = rep("yes",100)
+x3 = rep("no",300)
+z= c(x,x1,x2,x3)
+plot(z)
+z
+plot(z)
+z = ifelse(z=="yes",1,0)
+z
+plot(z)
+```
+may be we could draw proportion of missing values for bin widhts
+```{r label="15"}
+trainData %>% select(Age) %>% mutate(bins = ntile(seq_along(Age),8)) %>% group_by(bins) %>% summarise(propMissing = sum(is.na(Age)/n())) %>% ggplot(aes(x = bins,y = propMissing))+ geom_point()+ylim(0,1)
+```
+Missing data seems to be uniform throughout
+
+how to impute missing values?
+ we can impute with the average or through some relation with other variables
+```{r label = "16"}
+trainData %>% ggplot(aes(x=Sex,y=Age))+geom_boxplot()
+str(trainData$Sex)
+str(trainData$SibSp)
+trainData %>% group_by(as.factor(SibSp)) %>% summarise(meanAge = mean(Age,na.rm = T),sd = sd(Age,na.rm=T))
+#trying to see how imputation is with titles
+trainData %>% mutate( Mr = grepl("Mr",Name), Miss = grepl("Miss",Name),Master = grepl("Master",Name),Mrs = grepl("Mrs",Name)) %>% select(Mr,Miss,Mrs,Master,Name,Age)  %>% filter(Mr,Mrs==T) %>% count()
+#correcting for grepping on Mr and Miss where Mrs should have been the title
+trainData %>% mutate( Mr = grepl("Mr",Name), Miss = grepl("Miss",Name),Master = grepl("Master",Name),Mrs = grepl("Mrs",Name)) %>% select(Mr,Miss,Mrs,Master,Name,Age) %>% mutate(Miss = replace(Miss,Mrs==T,F)) %>% filter(Miss,Mrs==T)
+trainData %>% mutate( Mr = grepl("Mr",Name), Miss = grepl("Miss",Name),Master = grepl("Master",Name),Mrs = grepl("Mrs",Name)) %>% select(Mr,Miss,Mrs,Master,Name,Age) %>% mutate(Mr = replace(Mr,which(Mrs==T),F)) %>% filter(Miss,Mrs==T)
+#apply the above changes to trainData
+trainData = trainData %>% mutate( Mr = grepl("Mr",Name), Miss = grepl("Miss",Name),Master = grepl("Master",Name),Mrs = grepl("Mrs",Name))
+trainData = trainData %>% mutate(Mr = replace(Mr,which(Mrs==T),F),Miss=replace(Miss,which(Mrs==T),F))
+extractNames = function(x1,x2,x3,x4){
+        p = rep("error",length(x1))
+                for(i in seq_along(x1)){
+        if(x1[i]){
+                p[i] = "Mr"
+        }else if(x2[i]){
+                 p[i] = "Mrs"
+        }else if(x3[i]){
+                 p[i] = "Miss"
+        }else if(x4[i]){
+                 p[i] = "Master"
+        }
+                }
+        return(p)
+}
+trainData = trainData  %>% mutate(Title = extractNames(Mr,Mrs,Miss,Master))
+trainData%>% filter(Title == "error") %>% count()
+```
+only 24 of the 891 rows have no title, treating these as seperate group to impute age, is this a good strategy?(ref)
+```{r label = "17"}
+
+trainAgeImputeTable = trainData %>% select(Title,Age) %>% group_by(Title) %>% summarise(meanAge = mean(Age,na.rm=T),sd = sd(Age,na.rm=T))
+AgeImpute = function(x,y,table){
+        for( i in seq_along(table$Title)){
+        x = replace(x,which(is.na(x) & y == table$Title[i]),trainAgeImputeTable$meanAge[[i]])
+        }
+        return(x)
+}
+```
+Imputing missing values from the above table, is this a good strategy?(ref)
+
+```{r label="18"}
+trainData = trainData %>% mutate(Age = AgeImpute(Age,Title,trainAgeImputeTable))
+```
+repeat the above steps for test Age imputation
+```{r label = "19"}
+testData = testData %>% mutate( Mr = grepl("Mr",Name), Miss = grepl("Miss",Name),Master = grepl("Master",Name),Mrs = grepl("Mrs",Name))
+testData = testData %>% mutate(Mr = replace(Mr,which(Mrs==T),F),Miss=replace(Miss,which(Mrs==T),F))
+testData = testData  %>% mutate(Title = extractNames(Mr,Mrs,Miss,Master))
+testData%>% filter(Title == "error") %>% count()
+testData %>% filter(Title == "error")
+testAgeImputeTable = testData %>% select(Title,Age) %>% group_by(Title) %>% summarise(meanAge = mean(Age,na.rm=T),sd = sd(Age,na.rm=T))
+testData = testData %>% mutate(Age = AgeImpute(Age,Title,trainAgeImputeTable))
+plot(trainData$Title)
+str(trainData$Title)
+trainData$Title = as.factor(trainData$Title)
+testData$Title = as.factor(testData$Title)
+plot(testData$Title)
+plot(trainData$Title)
+```
+plot the age and Title
+```{r label = "20"}
+plot(trainData$Age)
+plot(as.factor(trainData$Title))
+plot(as.factor(testData$Title))
+```
+continue with remaining variables
+```{r label = "21"}
+plot(trainData$SibSp)
+str(trainData$SibSp)
+length(levels(as.factor(trainData$SibSp)))
+length(levels(as.factor(testData$SibSp)))
+levels(as.factor(trainData$SibSp))
+levels(as.factor(testData$SibSp))
+```
+treating sibsp as factor
+```{r label = "22"}
+trainData$SibSp = as.factor(trainData$SibSp)
+testData$SibSp = as.factor(testData$SibSp)
+```
+***parch***
+```{r label = "23"}
+plot(trainData$Parch)
+length(levels(as.factor(trainData$Parch)))
+length(levels(as.factor(testData$Parch)))
+levels(as.factor(trainData$Parch))
+levels(as.factor(testData$Parch))
+testData %>% filter(Parch == 9) %>% count()
+```
+as parch is number of parents and children, as Parch can be treated as a factor , to make testset data comparable to train data, modifying Parch from 9 to 6 for these two rows, is there a better strategy?(ref)
+what if both Parch and Sibsp can be combined to form a family?(ref)
+```{r label = "24"}
+testData = testData %>% mutate(Parch = replace(Parch,which(Parch == 9),6))
+trainData$Parch = as.factor(trainData$Parch)
+testData$Parch = as.factor(testData$Parch)
+```
+**Ticket**
+```{r label = "25"}
+plot(trainData$Ticket)
+str(trainData$Ticket)
+trainData$Ticket[1:10]
+```
+Ticket has a Number and aplhanum in some cases and not in others,seperate out those into two variables
+```{r label = "26"}
+extractTicket = function(x){
+      y =   strsplit(x," ")
+      q = rep(0,length(y))
+        for(i in seq_along(y)){
+                k = length(y[[i]])
+      q[i] = y[[i]][k]
+        }
+      return(q)
+}
+trainData = trainData %>% mutate(Ticket = as.character(Ticket))
+trainData = trainData %>% mutate(TicketNo = as.integer(extractTicket(Ticket)))
+trainData %>% filter(is.na(TicketNo))
+trainData = trainData %>% mutate(TicketNo = replace(TicketNo,which(is.na(TicketNo)),0))
+#apply changes to testData
+testData = testData %>% mutate(Ticket = as.character(Ticket))
+testData = testData %>% mutate(TicketNo = as.integer(extractTicket(Ticket)))
+testData %>% filter(is.na(TicketNo))
+levels(as.factor(trainData$TicketNo))
+plot(trainData$TicketNo)
+plot(as.factor(trainData$TicketNo))
+```
+is there any relationship between survived and ticketno?(ref)
+***Fare**
+```{r label = "27"}
+plot(trainData$Fare)
+str(trainData$Fare)
+plot(as.factor(trainData$Fare))
+#too many factor levels
+plot(trainData$Survived~trainData$Fare)
+#sharp increase in proportion of survived as price increased 50
+trainData %>% filter(Fare > 50) %>% dim()
+testData %>% filter(is.na(Fare))
+trainData %>% filter(Embarked == "S",Pclass=="3") %>% arrange(desc(Age))
+# BASED ON TRAINDATA FARE IS estimatede as 7 for that data, is there any better?(ref)
+testData = testData %>% mutate(Fare = replace(Fare,is.na(Fare),7))
+```
+
+***Cabin***
+```{r label = "28"}
+plot(trainData$Cabin)
+levels(as.factor(trainData$Cabin))
+trainData = trainData %>% mutate(Deck = unlist(str_extract(Cabin,pattern = "[A-Z]")))
+testData = testData %>% mutate(Deck = unlist(str_extract(Cabin,pattern = "[A-Z]")))
+str(trainData$Deck)
+levels(as.factor(trainData$Deck))
+levels(as.factor(testData$Deck))
+trainData %>% filter(Deck == "T" | Deck == "E",SibSp == 0, Parch == 0) %>% select(Deck,Fare) %>% head()
+#only one passenger in deck T , moving him to deck G , highest deck level and least frequent
+# by fare deck T might be more similar to deck E, which is better strategy
+trainData = trainData %>% mutate(Deck = replace(Deck,which(Deck == "T"),"G"))
+trainData$Deck = as.factor(trainData$Deck)
+testData$Deck = as.factor(testData$Deck)
+plot(trainData$De)
+plot(testData$Deck)
+```
+***Embarked***
+
+train data has missing values in Embarked
+```{r label="29"}
+trainData %>% filter(Embarked == "")
+trainData %>% filter(Deck == "B")
+# embarked is either C or S
+plot(trainData$Embarked)
+plot(testData$Embarked)
+# assigning training missing obseravtions to highest frequent 'S'
+trainData %>% mutate(Embarked = replace(Embarked,Embarked == "","S")) %>% filter(Embarked == "")
+trainData = trainData %>% mutate(Embarked = replace(Embarked,Embarked == "","S"))
+str(trainData$Embarked)
+trainData$Embarked = factor(trainData$E)
+plot(trainData$Embarked)
+#final check
+sapply(trainData,function(x){sum(is.na(x))})
+sapply(testData,function(x){sum(is.na(x))})
+sapply(trainData,function(x){length(levels(as.factor(x)))})
+sapply(testData,function(x){length(levels(as.factor(x)))})
+```
+
+No missing values except for column 'deck'
+variables under consideration for supervised learning ***Survived,Pclass,Sex,Age,Sibsp,Parch,Fare,Embarked,Title***
+TicketNo,Deck,PassengerId,Name leftout from training, new features?(ref)
+
+```{r label="30"}
+plot(trainData$Survived,main = "Survived barplot")
+# no severe class imbalance
+plot(trainData$Pclass)
+barplot(table(trainData$Survived~trainData$Sex))
+boxplot(trainData$Survived)
+hist(trainData$Age)
+pie(trainData$Survived)
+
+#2D
+with(trainData,plot(Survived~Fare))
+# increase in fare better survival
+with(trainData,plot(Survived~Age))
+# tail behaviour seems different to middle
+with(trainData,plot(Survived~Pclass))
+# 1stclass > 2nd class > 3rd class
+with(trainData,plot(Survived~Sex))
+# Females higher proportion of Survived
+with(trainData,plot(Survived~SibSp))
+# 1 or two sibsp more proportion of survived than no sibsp , better than higher
+with(trainData,plot(Survived~Parch))
+#Increasing parch to some extent has more rpoportion of survived
+with(trainData,plot(Survived~Embarked))
+#Each station has sightly different proportions of survived
+with(trainData,plot(Survived~Title))
+#Each title has different proportion of Survived
+```
+Finalise predictors, outcomes
+```{r}
+trainData = trainData %>% select(Survived,Pclass,Sex,Age,SibSp,Parch,Fare,Embarked,Title)
+testData = testData %>% select(Pclass,Sex,Age,SibSp,Parch,Fare,Embarked,Title)
+```
+
+
+As the data in train set and test set is split using passengerID, it makes sense to make use of the same for validation split
+```{r label="31"}
+train.titanic = trainData %>% filter(PassengerId < 711) 
+test.titanic = trainData %>% filter(PassengerId>=711) 
+```
+
+Stat Models
+```{r label = "32"}
+logit1 = glm(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked,family = "binomial",data = train.titanic)
+yhat = predict(logit1,newdata = test.titanic[,-1],type="response")
+plot(yhat)
+yhat = ifelse(yhat>0.5,1,0)
+sum(yhat)
+sum(test.titanic$Survived == 1)
+t = table(yhat,test.titanic$Survived)
+(t[1]+t[4])/sum(t)#validation = 0.823 # PLB = 0.761 
+# model2 add 'Age'
+logit2 = glm(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age,family = "binomial",data = train.titanic)
+yhat = predict(logit2,newdata = test.titanic[,-1],type="response")
+plot(yhat)
+yhat = ifelse(yhat>0.5,1,0)
+sum(yhat)
+sum(test.titanic$Survived == 1)
+t = table(yhat,test.titanic$Survived)
+(t[1]+t[4])/sum(t) # 0.856 
+# model 3 add 'Title'
+logit3 = glm(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,family = "binomial",data = train.titanic)
+yhat = predict(logit3,newdata = test.titanic[,-1],type="response")
+plot(yhat)
+yhat = ifelse(yhat>0.5,1,0)
+sum(yhat)
+sum(test.titanic$Survived == 1)
+t = table(yhat,test.titanic$Survived)
+(t[1]+t[4])/sum(t) # 0.873
+# lda
+ldafit = lda(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data = train.titanic)
+yhat = predict(ldafit,newdata = test.titanic[,-1])
+plot(yhat)
+yhat = yhat$class
+sum(yhat=="1")
+sum(test.titanic$Survived == 1)
+t = table(yhat,test.titanic$Survived)
+(t[1]+t[4])/sum(t) # 0.867
+#qda
+qdafit = qda(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data = trainData)
+#Error in qda.default(x, grouping, ...) : rank deficiency in group 0
+# why cant there be a QDA for this data?(ref)
+
+#Decision Trees
+DtreeFit = tree(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data = train.titanic)
+yhat = predict(DtreeFit,test.titanic[,-1],type = "class")
+sum(yhat ==1) #60
+t = table(yhat,test.titanic$Survived)
+(t[1]+t[4])/sum(t) #0.8618
+plot(DtreeFit)
+text(DtreeFit,pretty = 10)
+#prune tree
+set.seed(3)
+cv.DtreeFit = cv.tree(DtreeFit,FUN = prune.misclass)
+cv.DtreeFit
+par(mfrow=c(1,2))
+plot(cv.DtreeFit$size,cv.DtreeFit$dev,type="b",main="Error ~ terminal nodes(size)")
+plot(cv.DtreeFit$k,cv.DtreeFit$dev,type="b",main="Error ~ penalty")
+par(mfrow=c(1,1))
+alternatePruneDtree =  prune.misclass(DtreeFit,best=4)
+plot(alternatePruneDtree, train.titanic)
+text(alternatePruneDtree,pretty = 0)
+yhat = predict(alternatePruneDtree,test.titanic[,-1],type = "class")
+sum(yhat ==1) #60
+t = table(yhat,test.titanic$Survived)
+(t[1]+t[4])/sum(t) #0.8618
+
+# BAGGING
+BaggingTreesFit = randomForest(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data=train.titanic,mtry=8,importance=T)
+BaggingTreesFit
+yhat = predict(BaggingTreesFit,newdata = test.titanic[,-1],type = "class")
+plot(yhat)
+sum(yhat == 1)#71
+t = table(yhat,test.titanic$Survived)
+(t[1]+t[4])/sum(t) #0.812 
+#increase tree size
+BaggingTreesFit = randomForest(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data=train.titanic,mtry=8,importance=T,ntree = 10000)
+BaggingTreesFit
+yhat = predict(BaggingTreesFit,newdata = test.titanic[,-1],type = "class")
+plot(yhat)
+sum(yhat == 1)#70
+t = table(yhat,test.titanic$Survived)
+(t[1]+t[4])/sum(t) #0.80
+
+
+# RandomForest
+RFFit = randomForest(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data = train.titanic,importance=T,mtry=2,ntree=10000)
+yhat = predict(RFFit,newdata = test.titanic[,-1])
+sum(yhat == 1) #(3*1000,10000,20000)#65,65,65 (4*1000,10000,20000)#71,67,68
+t = table(yhat,test.titanic$Survived)
+(t[1]+t[4])/sum(t) #(3*1000,10000,20000)#0.856,0.856,0.856 # 0.83,0.84,0.83
+importance(RFFit)
+
+# GBoosting
+gbmFit = gbm(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data = train.titanic,distribution = "bernoulli",n.trees = 5000,interaction.depth = 4,shrinkage = 0.1)
+yhat = predict(gbmFit,newdata = test.titanic[,-1],n.trees = 5000,type = "response")
+gbmFit
+# all predictors have zero influence? why?
+# partial importance plot
+plot(gbmFit,i="Sex")
+plot(gbmFit,i="Fare")
+
+# svm
+svmfit1 = svm(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data = train.titanic,kernel = "linear",cost = 1,scale = F)
+# when scale = F reaching max iterations why?
+svmfit1
+yhat = predict(RFFit,newdata = test.titanic[,-1])
+yhat
+sum(yhat == 1)#62
+set.seed(1)
+tune.out = tune(svm,Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data = train.titanic,kernel="linear",ranges = list(cost=c(0.001,0.01,0.1,1.5,10,100)))
+summary(tune.out)
+#best model summary stored in best model column of the output
+summary(tune.out$best.model)
+yhat = predict(tune.out$best.model,test.titanic[,-1])
+t = table(yhat,test.titanic$Survived)
+(t[1]+t[4])/sum(t) #0.861
+
+# radial SVM
+tune.out = tune(svm,Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data = train.titanic,kernel="radial",ranges = list(cost=c(0.01,0.1,1,10,100,1000),gamma=c(0.5,1,2,3,4)))
+summary(tune.out)
+summary(tune.out$best.model)
+yhat = predict(tune.out$best.model,test.titanic[,-1])
+sum(yhat == 1) # 66
+t = table(yhat,test.titanic$Survived)
+(t[1]+t[4])/sum(t) #0.8508
+
+# neural net
+nnFit <- neuralnet(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data=train.titanic, hidden=c(5,3), err.fct="ce",linear.output=FALSE)
+#Error in neurons[[i]] %*% weights[[i]] : requires numeric/complex matrix/vector arguments
+
+#scale both train and test
+temptrain.titanic = as.data.frame(scale(train.titanic[,c("Fare","Age")],center = T,scale = T))
+sctrain.titanic = train.titanic
+sctrain.titanic$Age = temptrain.titanic$Age
+sctrain.titanic$Fare = temptrain.titanic$Fare
+temptesttitanic = as.data.frame(scale(test.titanic[,c("Fare","Age")],center = T,scale = T))
+sctest.titanic = test.titanic
+sctest.titanic$Age = temptesttitanic$Age
+sctest.titanic$Fare = temptesttitanic$Fare
+nnFit <- neuralnet(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data=sctrain.titanic, hidden=c(5,3), err.fct="ce",linear.output=FALSE)
+
+train.titanic.matrix = model.matrix(~ Survived+Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data=train.titanic)
+head(train.titanic.matrix)
+nnFit <- neuralnet(Survived1~Pclass2+Pclass3+Sexmale+SibSp1+SibSp2+SibSp3+SibSp4+SibSp5+SibSp8+Parch1+Parch2+Parch3+Parch4+Parch5+Parch6+Fare+EmbarkedQ+EmbarkedS+Age+TitleMaster+TitleMiss+TitleMr+TitleMrs,data=train.titanic.matrix, hidden=10, err.fct="ce",linear.output=FALSE)
+#algorithm did not converge in 1 of 1 repetition(s) within the stepmax
+
+#so making Survived,SibSp,Parch as integers instead of factors, this should reduce number of input features with minimum loss
+temptrain.titanic = train.titanic
+temptesttitanic = test.titanic
+temptrain.titanic = temptrain.titanic %>% mutate(Survived = as.integer(as.character(Survived)),SibSp = as.integer(as.character(Survived)),Parch = as.integer(as.character(Parch)),Age = scale(Age,T,T),Fare = scale(Fare,T,T))
+temptesttitanic = temptesttitanic %>% mutate(Survived = as.integer(as.character(Survived)),SibSp = as.integer(as.character(Survived)),Parch = as.integer(as.character(Parch)),Age = scale(Age,T,T),Fare = scale(Fare,T,T))
+train.titanic.matrix = model.matrix(~ Survived+Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data=temptrain.titanic)
+test.titanic.matrix= model.matrix(~ Survived+Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data=temptesttitanic)
+head(train.titanic.matrix)
+
+#now data is scaled and made it into matrix with dummy encoding
+#train nn
+nnFit <- neuralnet(Survived~Pclass2+Pclass3+Sexmale+SibSp+Parch+Fare+EmbarkedQ+EmbarkedS+Age+TitleMaster+TitleMiss+TitleMr+TitleMrs,data=train.titanic.matrix, hidden=10, err.fct="ce",linear.output=FALSE)
+plot(nnFit)
+yhat = compute(nnFit,test.titanic.matrix[,3:15])
+yhat = yhat$net.result
+yhat = ifelse(yhat>0.5,1,0)
+sum(yhat == 1) #65
+t = table(yhat,test.titanic$Survived)
+(t[1]+t[4])/sum(t) #1 => overfitting?even though train and test are different? , how to proceed?(ref)
+```
+
+Submission
+```{r}
+Submission = sampleSubmission
+# submit logit2 
+logit2 = glm(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age,family = "binomial",data = trainData)
+yhat = predict(logit2,newdata = testData,type="response")
+plot(yhat)
+yhat = ifelse(yhat>0.5,1,0)
+sum(yhat)#161
+Submission$Survived = yhat
+write.csv(x = Submission,file="logit2.csv",row.names = F,quote = F)# 0.7655
+#submit logit3
+logit3 = glm(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,family = "binomial",data = trainData)
+yhat = predict(logit3,newdata = testData,type="response")
+plot(yhat)
+yhat = ifelse(yhat>0.5,1,0)
+sum(yhat)#168
+Submission$Survived = yhat
+write.csv(x = Submission,file="logit3.csv",row.names = F,quote = F)# 0.775
+#submit lda
+#submit Dtree
+# Submit rf
+RFFit = randomForest(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data = trainData,importance=T,mtry=3,ntree=10000)
+yhat = predict(RFFit,newdata = testData)
+sum(yhat == 1)# 144
+Submission$Survived = yhat
+write.csv(x = Submission,file="RFfit.csv",row.names = F,quote = F)# 0.78469
+# submitRF2
+RFFit2 = randomForest(Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data = trainData,importance=T,mtry=2,ntree=10000)
+yhat = predict(RFFit,newdata = testData)
+sum(yhat == 1)# 152
+Submission$Survived = yhat
+write.csv(x = Submission,file="RFfit2.csv",row.names = F,quote = F)# 0.775
+# submit svm
+set.seed(1)
+tune.out = tune(svm,Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data = trainData,kernel="linear",ranges = list(cost=c(0.001,0.01,0.1,1.5,10,100)))
+summary(tune.out)
+#best model summary stored in best model column of the output
+summary(tune.out$best.model)
+yhat = predict(tune.out$best.model,testData)
+Submission$Survived = yhat
+write.csv(x = Submission,file="linearSVM.csv",row.names = F,quote = F)#0.78469
+
+#submit svm non linear
+set.seed(1)
+tune.out = tune(svm,Survived~Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data = trainData,kernel="radial",ranges = list(cost=c(0.01,0.1,1,10,100,1000),gamma=c(0.5,1,2,3,4)))
+summary(tune.out)
+#best model summary stored in best model column of the output
+summary(tune.out$best.model)
+yhat = predict(tune.out$best.model,testData)
+sum(yhat == 1) #137
+Submission$Survived = yhat
+write.csv(x = Submission,file="nonlinearSVM.csv",row.names = F,quote = F)#0.7655
+
+#submit nn
+temptrain.titanic = trainData
+temptesttitanic = testData
+#add a dummy Survived column to test data
+temptesttitanic$Survived = Submission$Survived
+temptrain.titanic = temptrain.titanic %>% mutate(Survived = as.integer(as.character(Survived)),SibSp = as.integer(as.character(Survived)),Parch = as.integer(as.character(Parch)),Age = scale(Age,T,T),Fare = scale(Fare,T,T))
+temptesttitanic = temptesttitanic %>% mutate(Survived = as.integer(as.character(Survived)),SibSp = as.integer(as.character(Survived)),Parch = as.integer(as.character(Parch)),Age = scale(Age,T,T),Fare = scale(Fare,T,T))
+train.titanic.matrix = model.matrix(~ Survived+Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data=temptrain.titanic)
+test.titanic.matrix= model.matrix(~ Survived+Pclass+Sex+SibSp+Parch+Fare+Embarked+Age+Title,data=temptesttitanic)
+head(train.titanic.matrix)
+
+#now data is scaled and made it into matrix with dummy encoding
+#train nn
+nnFit <- neuralnet(Survived~Pclass2+Pclass3+Sexmale+SibSp+Parch+Fare+EmbarkedQ+EmbarkedS+Age+TitleMaster+TitleMiss+TitleMr+TitleMrs,data=train.titanic.matrix, hidden=10, err.fct="ce",linear.output=FALSE)
+plot(nnFit)
+yhat = compute(nnFit,test.titanic.matrix[,3:15])
+yhat = yhat$net.result
+str(yhat)
+yhat = ifelse(yhat>0.5,1,0)
+sum(yhat == 1) #137 #152this time why?
+yhat = as.integer(as.character(yhat))
+Submission = sampleSubmission
+Submission$Survived = yhat
+str(Submission)
+write.csv(x = Submission,file="nnAllasFactors.csv",row.names = F,quote = F)#0.7655
+```
+
+
